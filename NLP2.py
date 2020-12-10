@@ -1,237 +1,452 @@
 from nltk.corpus import brown
+import math
 
-data = brown.tagged_sents(categories='news')
-len_data = len(data)
-training_set = data[0:round(0.9*len_data)]
-test_set = data[round(0.9*len_data): len_data]
-"""
-training_set = [[("the", "NN"), ("dog", "NN"), ("the", "VB")],[("dog", "VB"), ("the", "NN-ty"), ("dog", "ADJ"), ("dog", "VB")]]
-test_set = [[("the", "NN"), ("dog", "ADJ")]]
-"""
-TAG_SET = set()
+# Global variables
 TAGS = []
 word_shows_tags_dict = {}
 joined_tag_show_dict = {}
 tag_show_dict = {}
+START_TAG_NUM = -1
+STOP_TAG_NUM = -1
 
-""""
-this function takes a tag and returns it stripped form everithing after the '+' or '-'
-"""
+# Constants
+SMOOTH_PICK_TAG = 0
+SMOOTH_CONST_PROB = 1
+SMOOTH_ADD_ONE = 2
+
+
+def get_training_n_test_sets():
+    """"
+    generate the training and test sets and returns them.
+    """
+    data = brown.tagged_sents(categories='news')
+    a_training_set = data[0:round(0.9*len(data))]
+    a_test_set = data[round(0.9*len(data)): len(data)]
+    return a_training_set, a_test_set
+
+
 def suffix_tag(tag):
+    """"
+    this function takes a tag and returns it stripped form everything after the '+' or '-'
+    """
     for i in range(len(tag)):
-        if (tag[ i ] == '+' or tag[ i ] == '-'):
-            return tag[ 0:i ]
+        if tag[i] == '+' or tag[i] == '-':
+            return tag[0:i]
     return tag
 
-"""
-this function loads all the tags that appear in the training set to the TAG_SET
-"""
-def load_tags():
-    for tagged_sent in training_set:
+
+def load_tags(a_training_set):
+    """
+    this function loads all the tags that appear in the training set to the TAG_SET
+    """
+    global TAGS, START_TAG_NUM, STOP_TAG_NUM
+    tag_set = set()
+    for tagged_sent in a_training_set:
         for tagged_word in tagged_sent:
+            # (word, tag) = tagged_word
             tag = tagged_word[1]
             tag = suffix_tag(tag)
-            TAG_SET.add(tag)
+            tag_set.add(tag)
+    TAGS = sorted(tag_set)
+    TAGS.append('START')
+    START_TAG_NUM = len(TAGS)-1
+    TAGS.append('STOP')
+    STOP_TAG_NUM = len(TAGS)-1
+    return
 
-"""
-this function loads the values of the word_shows_tag_dict, the tag_show_dict and the joined_tag_show_dict
-from the training set
-word_shows_tag_dict[x][i] = how many times the word x appeard with the tag number i (the number reffers to the
- index of the tag in the TAGS array)
-joined_tag_show_dict[i][j] = how many times tha tag number j followed the tag number i in the training set
-(the number reffers to the index of the tag in the TAGS array)
-tag_show_dict[i] = how many times the tag number i appeared in the training set
-"""
-def load_dicts():
-    word = ""
-    tag = ""
-    tag_show_dict['START'] = 0
-    joined_tag_show_dict['START'] = [0] * len(TAGS)
+
+def load_dicts(training_set):
+    """
+    this function loads the values of the word_shows_tags_dict, the tag_show_dict and the joined_tag_show_dict
+    from the training set.
+
+    tag_show_dict[i] = how many times the tag number i appeared in the training set.
+
+    word_shows_tags_dict[x][i] = how many times the word x appeared with the tag number i (the number refers to the
+    index of the tag in the TAGS array)
+
+    joined_tag_show_dict[i][j] = how many times the tag number j followed the tag number i in the training set
+    (the number refers to the index of the tag in the TAGS array)
+    """
+    global TAGS, word_shows_tags_dict, joined_tag_show_dict, tag_show_dict, START_TAG_NUM, STOP_TAG_NUM
+    word_shows_tags_dict = {}
+    joined_tag_show_dict = {}
+
+    tag_show_dict = dict()
+    tag_show_dict[START_TAG_NUM] = len(training_set)
+    tag_show_dict[STOP_TAG_NUM] = len(training_set)
+
     for tagged_sent in training_set:
-        last_tag_num = None
-        tag_show_dict['START']+=1
+        last_tag_num = START_TAG_NUM
+
         for tagged_word in tagged_sent:
-            word = tagged_word[ 0 ]
+
+            # init
+            word = tagged_word[0]
             tag = suffix_tag(tagged_word[1])
             tag_num = -1
+
+            # finds the tag number for each word instance tag.
             for i in range(len(TAGS)):
-                if (tag == TAGS[ i ]):
+                if tag == TAGS[i]:
                     tag_num = i
                     break
+
+            # fill tag_show_dict (tags appearance counters).
             if tag_num in tag_show_dict:
                 tag_show_dict[tag_num] += 1
             else:
                 tag_show_dict[tag_num] = 1
+
+            # fill the word_shows_tags_dict (each word tags appearance counters).
             if word in word_shows_tags_dict.keys():
-                word_shows_tags_dict[ word ][ tag_num ] += 1
+                word_shows_tags_dict[word][tag_num] += 1
             else:
-                word_shows_tags_dict[ word ] = [ 0 ] * len(TAGS)
-                word_shows_tags_dict[ word ][ tag_num ] = 1
-            if last_tag_num != None:
-                if last_tag_num in joined_tag_show_dict:
-                    joined_tag_show_dict[last_tag_num][tag_num] += 1
-                else:
-                    joined_tag_show_dict[last_tag_num] = [0] * len(TAGS)
-                    joined_tag_show_dict[last_tag_num][tag_num] = 1
+                word_shows_tags_dict[word] = [0] * len(TAGS)
+                word_shows_tags_dict[word][tag_num] = 1
+
+            # fill joined_tag_show_dict (each tag, next tag appearances counters).
+            if last_tag_num in joined_tag_show_dict:
+                joined_tag_show_dict[last_tag_num][tag_num] += 1
             else:
-                joined_tag_show_dict['START'][tag_num] += 1
+                joined_tag_show_dict[last_tag_num] = [0] * len(TAGS)
+                joined_tag_show_dict[last_tag_num][tag_num] = 1
+
+            # Update last_tag_num.
             last_tag_num = tag_num
+
+        # fill joined_tag_show_dict for [last_word][STOP] sequence.
+        tag_num = STOP_TAG_NUM
+        if last_tag_num in joined_tag_show_dict:
+            joined_tag_show_dict[last_tag_num][tag_num] += 1
+        else:
+            joined_tag_show_dict[last_tag_num] = [0] * len(TAGS)
+            joined_tag_show_dict[last_tag_num][tag_num] = 1
+
     return
 
 
 def compute_word_most_likely_tag(word):
-    if (not(word in word_shows_tags_dict)):
-        return 'NN'
-    maxTagNum = 0
-    maxTagShows = 0
-    for i in range(len(TAGS)):
-        if (word_shows_tags_dict[word][i] > maxTagShows):
-            maxTagShows = word_shows_tags_dict[word][i]
-            maxTagNum = i
-    return TAGS[maxTagNum]
+    """
+    this function compute mlt for given word.
+    """
+    global TAGS, word_shows_tags_dict, joined_tag_show_dict, tag_show_dict
 
-def compute_error_rate_MLT():
+    if not(word in word_shows_tags_dict.keys()):
+        return 'NN'
+
+    max_tag_num = 0
+    max_tag_shows = 0
+    for i in range(len(TAGS)):
+        if word_shows_tags_dict[word][i] > max_tag_shows:
+            max_tag_shows = word_shows_tags_dict[word][i]
+            max_tag_num = i
+    return TAGS[max_tag_num]
+
+
+def compute_error_rate_mlt(test_set):
+    """
+    this function calculate the error rate on test set according to MLT.
+    """
+    global TAGS, word_shows_tags_dict, joined_tag_show_dict, tag_show_dict
     known_word_num = 0
     unknown_word_num = 0
     known_word_correct = 0
     unknown_word_correct = 0
+
     for tagged_sent in test_set:
         for tagged_word in tagged_sent:
-            word_MLT_tag = compute_word_most_likely_tag(tagged_word[0])
+            # compute the mlt for each word instance.
+            word_mlt_tag = compute_word_most_likely_tag(tagged_word[0])
+
+            # count how much word known or not, and how much correct.
             if tagged_word[0] in word_shows_tags_dict.keys():
                 known_word_num += 1
-                if word_MLT_tag == suffix_tag(tagged_word[1]):
+                if word_mlt_tag == suffix_tag(tagged_word[1]):
                     known_word_correct += 1
             else:
                 unknown_word_num += 1
-                if word_MLT_tag == suffix_tag(tagged_word[1]):
+                if word_mlt_tag == suffix_tag(tagged_word[1]):
                     unknown_word_correct += 1
+
+    # compute error rate known words
     if known_word_num > 0:
-        errorRateMLT_known = 1-(known_word_correct/known_word_num)
+        error_rate_mlt_known = 1 - (known_word_correct / known_word_num)
     else:
-        errorRateMLT_known = 0
+        error_rate_mlt_known = 0
+
+    # compute error rate unknown words
     if unknown_word_num > 0:
-        errorRateMLT_unknown = 1-(unknown_word_correct/unknown_word_num)
+        error_rate_mlt_unknown = 1 - (unknown_word_correct / unknown_word_num)
     else:
-        errorRateMLT_unknown = 0
-    errorRateMLT = 1-((known_word_correct + unknown_word_correct)/(known_word_num+unknown_word_num))
-    return(errorRateMLT_known, errorRateMLT_unknown, errorRateMLT)
+        error_rate_mlt_unknown = 0
+
+    error_rate_mlt = 1-((known_word_correct + unknown_word_correct)/(known_word_num+unknown_word_num))
+    return error_rate_mlt_known, error_rate_mlt_unknown, error_rate_mlt
 
 
-def compute_transition_prob_HMM(tag1_num, tag2_num):
-    #q(tag2|tag1) = count(tag1, tag2)/sum(y')count(tag1, y') = count(tag1,tag2)/count(tag1)
-    count_tag1_tag2 = joint_tag_count(tag1_num, tag2_num)
-    count_tag1 = tag_count(tag1_num)
-    return (count_tag1_tag2/count_tag1)
+def compute_transition_prob_hmm(tag1_num, tag2_num):
+    """
+    this function calculate the transition probability of y(i), knowing y(i-1).
+    """
+    global TAGS, word_shows_tags_dict, joined_tag_show_dict, tag_show_dict
+    # q(tag(i)|tag(i-1)) = count(tag(i), tag(i-1))/sum(y')count(tag1, y') = count(tag1,tag2)/count(tag1)
+    # q(tag2|tag1) = count(tag1, tag2)/sum(y')count(tag1, y') = count(tag1,tag2)/count(tag1)
+    count_tag1_tag2 = joined_tag_show_dict[tag1_num][tag2_num]
+    count_tag1 = tag_show_dict[tag1_num]
+    return count_tag1_tag2/count_tag1
 
-"""
-for unknown word we will choose TAGS[0] as the tag
-"""
-def compute_emission_prob_HMM(tag_num, word):
-    #e(word|tag) = count(word,tag)/sum(x')count(x',tag) = count(word,tag)/count(tag)
-    if word in word_shows_tags_dict:
+
+def compute_emission_prob_hmm(tag_num, word, smooth):
+    """
+     this function calculate the emission probability of a word, knowing its tag.
+    """
+    global TAGS, word_shows_tags_dict, joined_tag_show_dict, tag_show_dict
+    # e(word|tag) = count(word,tag)/sum(x')count(x',tag) = count(word,tag)/count(tag)
+
+    count_tag = tag_show_dict[tag_num]
+
+    # Handling known words:
+    if word in word_shows_tags_dict.keys():
         count_word_tag = word_shows_tags_dict[word][tag_num]
-    else:
-        if(tag_num == 0):
-            count_word_tag = 1
+
+        if smooth == SMOOTH_ADD_ONE:
+            count_word_tag += 1
+            count_tag += len(word_shows_tags_dict.keys())
+
+        # Add smoothing to known words when appear with new tags.
         else:
-            count_word_tag = 0
-    count_tag = tag_count(tag_num)
-    return (count_word_tag/count_tag)
+            if count_word_tag == 0:
+                return 1e-20
 
-def tag_count(tag_num):
-    return tag_show_dict[tag_num]
+    # Handling Unknown words:
+    else:
+        count_word_tag = 0
+        if smooth == SMOOTH_ADD_ONE:
+            count_word_tag += 1
+            count_tag += len(word_shows_tags_dict.keys())
 
-def joint_tag_count(tag1_num, tag2_num):
-    return joined_tag_show_dict[tag1_num][tag2_num]
+        elif smooth == SMOOTH_PICK_TAG:
+            # for unknown word we will choose TAGS[27] as the tag
+            if tag_num == 58:  # choose 'NN' (58)
+                count_word_tag = 1
+            else:
+                count_word_tag = 0
+        elif smooth == SMOOTH_CONST_PROB:
+            return 1e-20  # 0.00001
 
-def HMM_Viterby(sent):
+    return count_word_tag/count_tag
+
+
+def hmm_viterbi(sent, smooth):
+    """
+    compute the viterbi algorithm
+    """
+    global TAGS, word_shows_tags_dict, joined_tag_show_dict, tag_show_dict, START_TAG_NUM, STOP_TAG_NUM
+
+    # Init parameters
     n = len(sent)
     m = len(TAGS)
-    S = []
-    S.append(['*'])
+
+    # matrix holding all tag number options for each word in sentence.
+    S = list()
+    # add S0= [*] for START
+    S.append([START_TAG_NUM])
+    # S += n cells each holding all tagging options
     for i in range(n):
-        S.append(TAGS)
-    pi = []
+        S.append(list(range(len(TAGS)-2)))
+    S.append([STOP_TAG_NUM])
+
+    # list of back-tracking pointers to tags numbers for constructing the max probability tagging sequence.
+    # parent[i][j] = if the i word is tagged by j, its parent is tagged by this.
     parent = []
-    pi.append([0])
-    for i in range(n):
-        pi.append([0] * m)
+    for i in range(n+1):
         parent.append([-1]*m)
-    pi[0][0] = 1
-    for k in range(1,n+1):
-        for j in range(m):
-            max_prob = 0
+
+    # pi(k, u) = matrix holding probability for k-word to be tagged by tag u.
+    pi = []
+    # init pi[k] = m cells list (each for a tag). 0 < k < n+1
+    for k in range(n+2):
+        pi.append([0]*m)
+
+    # init START, STOP probabilities.
+    pi[0][START_TAG_NUM] = 1
+    pi[n+1][STOP_TAG_NUM] = 1
+
+    # go over words in sentence.
+    for k in range(1, n+1):  # S(1) to S(n+1) as STOP
+        # go over tags possibilities for this word.
+        for j in S[k]:
+            max_prob = -math.inf
             p = -1
-            for l in range(len(S[k-1])):
-                if(k != 1):
-                    trans_prob = compute_transition_prob_HMM(l, j)
+            # go over tags possibilities for previous word.
+            for l in S[k-1]:
+                trans_prob = compute_transition_prob_hmm(l, j)
+                emm_prob = compute_emission_prob_hmm(j, sent[k-1], smooth)
+
+                # calc log probability value
+                if (trans_prob > 0) and (emm_prob > 0):
+                    prob = pi[k-1][l] + math.log(trans_prob) + math.log(emm_prob)
                 else:
-                    trans_prob = joined_tag_show_dict['START'][j]/tag_show_dict['START']
-                emm_prob = compute_emission_prob_HMM(j, sent[k-1])
-                if (pi[k-1][l]*trans_prob*emm_prob >= max_prob):
-                    max_prob = pi[k-1][l]*trans_prob*emm_prob
+                    prob = -math.inf
+
+                # look for max prob according to previous value
+                if prob > max_prob:
+                    max_prob = prob
                     p = l
+
+            # Update max_prob to pi and parent.
             pi[k][j] = max_prob
-            parent[k-1][j] = p
-    max_prob = 0
-    max_tag_idx = -1
-    for tag_idx in range(m):
-        if(pi[n][tag_idx] > max_prob):
-            max_prob = pi[n][tag_idx]
-            max_tag_idx = tag_idx
+            parent[k - 1][j] = p
+
+    # Add STOP effect
+    for j in S[n+1]:
+        max_prob = -math.inf
+        p = -1
+        for l in S[n]:
+            trans_prob = compute_transition_prob_hmm(l, j)
+
+            # calc log probability value
+            if trans_prob > 0:
+                prob = pi[n][l] + math.log(trans_prob)
+            else:
+                prob = -math.inf
+
+            # look for max prob according to previous value
+            if prob > max_prob:
+                max_prob = prob
+                p = l
+
+        # Update parent according to prop_max.
+        parent[n][j] = p
+
+    # backtrack to find tagging for each word.
+    last_word_tag_num = parent[n][STOP_TAG_NUM]
     res = [("", -1)]*n
-    res[n-1] = (sent[n-1], max_tag_idx)
-    curr_idx = max_tag_idx
-    parent_idx = -1
-    for i in range(n-2,-1,-1):
+    res[n-1] = (sent[n-1], TAGS[last_word_tag_num])
+    curr_idx = last_word_tag_num
+    for i in range(n-2, -1, -1):
         parent_idx = parent[i+1][curr_idx]
-        res[i] = (sent[i], parent_idx)
+        res[i] = (sent[i], TAGS[parent_idx])
         curr_idx = parent_idx
     return res
 
-def compute_error_rate_HMM():
+
+def compute_error_rate_hmm(test_set, smooth):
+    """
+    compute error rate in test set using hmm.
+    """
+    global TAGS, word_shows_tags_dict, joined_tag_show_dict, tag_show_dict
     known_word_num = 0
     unknown_word_num = 0
     known_word_correct = 0
     unknown_word_correct = 0
+
     for tagged_sent in test_set:
         sent = [tagged_sent[i][0] for i in range(len(tagged_sent))]
-        HMM_tagged_sent = HMM_Viterby(sent)
+        hmm_tagged_sent = hmm_viterbi(sent, smooth)
         for i in range(len(tagged_sent)):
             word = tagged_sent[i][0]
             word_real_tag = tagged_sent[i][1]
-            word_HMM_tag = TAGS[HMM_tagged_sent[i][1]]
+            word_hmm_tag = hmm_tagged_sent[i][1]
             if word in word_shows_tags_dict.keys():
                 known_word_num += 1
-                if word_HMM_tag == suffix_tag(word_real_tag):
+                if word_hmm_tag == suffix_tag(word_real_tag):
                     known_word_correct += 1
             else:
                 unknown_word_num += 1
-                if word_HMM_tag == suffix_tag(word_real_tag):
+                if word_hmm_tag == suffix_tag(word_real_tag):
                     unknown_word_correct += 1
-    errorRateHMM = 0
-    errorRateHMM_known = 0
-    errorRateHMM_unknown = 0
+
+    error_rate_hmm = 0
+    error_rate_hmm_known = 0
+    error_rate_hmm_unknown = 0
     if known_word_num > 0:
-        errorRateHMM_known = 1-(known_word_correct/known_word_num)
+        error_rate_hmm_known = 1-(known_word_correct/known_word_num)
     if unknown_word_num > 0:
-        errorRateHMM_unknown = 1-(unknown_word_correct/unknown_word_num)
+        error_rate_hmm_unknown = 1-(unknown_word_correct/unknown_word_num)
     if (known_word_num+unknown_word_num) > 0:
-        errorRateHMM = 1-((known_word_correct + unknown_word_correct)/(known_word_num+unknown_word_num))
-    return(errorRateHMM_known, errorRateHMM_unknown, errorRateHMM)
+        error_rate_hmm = 1-((known_word_correct + unknown_word_correct) / (known_word_num + unknown_word_num))
+    return error_rate_hmm_known, error_rate_hmm_unknown, error_rate_hmm
+
+
+def print_statistics(test_set):
+    global word_shows_tags_dict
+    know_only = []
+    word_cnt = 0
+    unknown_words_cnt = 0
+
+    for sent in test_set:
+        all_in = True
+        for word in sent:
+            word_cnt += 1
+            if word[0] not in word_shows_tags_dict:
+                unknown_words_cnt += 1
+                all_in = False
+        if all_in:
+            know_only.append(sent)
+
+    print("TEST SET STATISTICS:")
+    print("unknown words amount: " + str(unknown_words_cnt))
+    print("total words amount: " + str(word_cnt))
+    print("ratio words (unknown from total): " + str(unknown_words_cnt/word_cnt))
+    print("total sentences: " + str(len(test_set)))
+    print("known words only sentences: " + str(len(know_only)))
+    print("ratio sentences (known words only from total): " + str(len(know_only)/len(test_set)))
+    print()
+    return print_statistics
+
+
+def print_dict(a):
+    for i in a:
+        print(i)
+        print(a[i])
+
 
 if __name__ == '__main__':
-    load_tags()
-    TAGS = list(TAG_SET)
 
-    load_dicts()
-    errorRateMLT = compute_error_rate_MLT()
+    training_set, test_set = get_training_n_test_sets()
+
+    # training_set = [[("the", "NN"), ("dog", "NN"), ("the", "VB")],
+    #                 [("dog", "VB"), ("the", "NN-ty"), ("dog", "ADJ"), ("dog", "VB")]]
+    # test_set = [[("the", "NN"), ("dog", "ADJ"), ("ad", "ADJ")]]
+
+    # training_set = [[("A", "H"), ("A", "H"), ("A", "L"), ("A", "L"), ("A", "L")],
+    #                 [("C", "L"), ("C", "L"), ("G", "L"), ("G", "L"), ("C", "H")],
+    #                 [("C", "H"), ("C", "H"), ("T", "L"), ("G", "H"), ("T", "L"), ("G", "H")],
+    #                 [("G", "H"), ("T", "L"), ("T", "H"), ("T", "H")]]
+    #
+    # test_set = [[("G", "H"), ("C", "H"), ("C", "L"), ("A", "H"), ("A", "H")]]
+
+    load_tags(training_set)
+    load_dicts(training_set)
+
+    print_statistics(test_set)
+
+    errorRateMLT = compute_error_rate_mlt(test_set)
     print("MLT ERROR RATE:")
-    print("ERROR RATE KNOWN = " + str(errorRateMLT[0]), "ERROR RATE UNKNOWN = " + str(errorRateMLT[1]),
-          "TOTAL ERROR RATE = " + str(errorRateMLT[2]))
+    print("ERROR RATE KNOWN = " + str(errorRateMLT[0]))
+    print("ERROR RATE UNKNOWN = " + str(errorRateMLT[1]))
+    print("TOTAL ERROR RATE = " + str(errorRateMLT[2]))
+    print()
 
-    errorRateHMM = compute_error_rate_HMM()
-    print("HMM ERROR RATE:")
-    print("ERROR RATE KNOWN = " + str(errorRateHMM[ 0 ]), "ERROR RATE UNKNOWN = " + str(errorRateHMM[ 1 ]),
-          "TOTAL ERROR RATE = " + str(errorRateHMM[ 2 ]))
+    errorRateHMM = compute_error_rate_hmm(test_set, SMOOTH_PICK_TAG)
+    print("HMM ERROR RATE (picking 'NN' tag for unknown words):")
+    print("ERROR RATE KNOWN = " + str(errorRateHMM[0]))
+    print("ERROR RATE UNKNOWN = " + str(errorRateHMM[1]))
+    print("TOTAL ERROR RATE = " + str(errorRateHMM[2]))
+    print()
+
+    errorRateHMM = compute_error_rate_hmm(test_set, SMOOTH_CONST_PROB)
+    print("HMM ERROR RATE (return const small probability for unknown words):")
+    print("ERROR RATE KNOWN = " + str(errorRateHMM[0]))
+    print("ERROR RATE UNKNOWN = " + str(errorRateHMM[1]))
+    print("TOTAL ERROR RATE = " + str(errorRateHMM[2]))
+    print()
+
+    errorRateHMM = compute_error_rate_hmm(test_set, SMOOTH_ADD_ONE)
+    print("HMM add one ERROR RATE:")
+    print("ERROR RATE KNOWN = " + str(errorRateHMM[0]))
+    print("ERROR RATE UNKNOWN = " + str(errorRateHMM[1]))
+    print("TOTAL ERROR RATE = " + str(errorRateHMM[2]))
+    print()
