@@ -1,18 +1,53 @@
 from nltk.corpus import brown
 import math
+import regex as re
+
+#'firstWord',
 
 # Global variables
 TAGS = []
 word_shows_tags_dict = {}
 joined_tag_show_dict = {}
 tag_show_dict = {}
+pseudo_word_shows_tags_dict = {}
+
 START_TAG_NUM = -1
 STOP_TAG_NUM = -1
 
 # Constants
+PSEUDO_WORDS = ['twoDigitNum', 'fourDigitNum', 'othernum', 'containsDigitsAndAlpha', 'containsDigitAndDash',
+                'containsDigitAndSlash', 'containsDigitAndComma', 'containsDigitAndPeriod',
+                'allCaps', 'capPeriod', 'initCap', 'lowercase', 'other']
+PSEUDO_WORD_PATTERN = ['[0-9]{2}', '[0-9]{4}', '[0-9]+', '[0-9a-zA-Z]+', '[0-9\-]+', '[\\\\\\0-9]+', '[0-9\,]+',
+                       '[0-9\.]+', '[A-Z]+', '[A-Z]+\.', '[A-Z][a-z]+', '[a-z]+']
 SMOOTH_PICK_TAG = 0
 SMOOTH_CONST_PROB = 1
 SMOOTH_ADD_ONE = 2
+NO_PSEUDO_WORDS_DICTIONARY = 0
+PSEUDO_WORDS_DICTIONARY = 1
+
+
+def load_pseudo_word_show_dict():
+    for pseudo_word in PSEUDO_WORDS:
+        pseudo_word_shows_tags_dict[pseudo_word] = [0] * len(TAGS)
+    for word in word_shows_tags_dict.keys():
+        sum = 0
+        for i in range(len(TAGS)):
+            sum += word_shows_tags_dict[word][i]
+        if sum < 5:
+            pseudo = find_pseudo_word(word)
+            for i in range(len(TAGS)):
+                pseudo_word_shows_tags_dict[pseudo][i] += word_shows_tags_dict[word][i]
+        else:
+            pseudo_word_shows_tags_dict[word] = word_shows_tags_dict[word]
+
+
+def find_pseudo_word(word):
+    for i in range(len(PSEUDO_WORD_PATTERN)):
+        pattern = re.compile(PSEUDO_WORD_PATTERN[i])
+        if re.fullmatch(pattern, word):
+            return PSEUDO_WORDS[i]
+    return PSEUDO_WORDS[len(PSEUDO_WORDS)-1]
 
 
 def get_training_n_test_sets():
@@ -59,12 +94,9 @@ def load_dicts(training_set):
     """
     this function loads the values of the word_shows_tags_dict, the tag_show_dict and the joined_tag_show_dict
     from the training set.
-
     tag_show_dict[i] = how many times the tag number i appeared in the training set.
-
     word_shows_tags_dict[x][i] = how many times the word x appeared with the tag number i (the number refers to the
     index of the tag in the TAGS array)
-
     joined_tag_show_dict[i][j] = how many times the tag number j followed the tag number i in the training set
     (the number refers to the index of the tag in the TAGS array)
     """
@@ -197,48 +229,60 @@ def compute_transition_prob_hmm(tag1_num, tag2_num):
     return count_tag1_tag2/count_tag1
 
 
-def compute_emission_prob_hmm(tag_num, word, smooth):
+def compute_emission_prob_hmm(tag_num, word, smooth, dict):
     """
      this function calculate the emission probability of a word, knowing its tag.
     """
-    global TAGS, word_shows_tags_dict, joined_tag_show_dict, tag_show_dict
+    global TAGS, word_shows_tags_dict, joined_tag_show_dict, tag_show_dict, pseudo_word_shows_tags_dict
     # e(word|tag) = count(word,tag)/sum(x')count(x',tag) = count(word,tag)/count(tag)
 
     count_tag = tag_show_dict[tag_num]
 
-    # Handling known words:
-    if word in word_shows_tags_dict.keys():
-        count_word_tag = word_shows_tags_dict[word][tag_num]
+    #regular word dict
+    if dict == NO_PSEUDO_WORDS_DICTIONARY:
+        # Handling known words:
+        if word in word_shows_tags_dict.keys():
+            count_word_tag = word_shows_tags_dict[word][tag_num]
 
-        if smooth == SMOOTH_ADD_ONE:
-            count_word_tag += 1
-            count_tag += len(word_shows_tags_dict.keys())
+            if smooth == SMOOTH_ADD_ONE:
+                count_word_tag += 1
+                count_tag += len(word_shows_tags_dict.keys())
 
         # Add smoothing to known words when appear with new tags.
-        else:
-            if count_word_tag == 0:
-                return 1e-20
+            else:
+                if count_word_tag == 0:
+                    return 1e-20
 
-    # Handling Unknown words:
+        # Handling Unknown words:
+        else:
+            count_word_tag = 0
+            if smooth == SMOOTH_ADD_ONE:
+                count_word_tag += 1
+                count_tag += len(word_shows_tags_dict.keys())
+
+            elif smooth == SMOOTH_PICK_TAG:
+                # for unknown word we will choose TAGS[27] as the tag
+                if tag_num == 58:  # choose 'NN' (58)
+                    count_word_tag = 1
+                else:
+                    count_word_tag = 0
+            elif smooth == SMOOTH_CONST_PROB:
+                return 1e-20  # 0.00001
+
+    # pseudo word dict
     else:
-        count_word_tag = 0
+        if word in pseudo_word_shows_tags_dict:
+            count_word_tag = pseudo_word_shows_tags_dict[word][tag_num]
+        else:
+            pseudo = find_pseudo_word(word)
+            count_word_tag = pseudo_word_shows_tags_dict[pseudo][tag_num]
         if smooth == SMOOTH_ADD_ONE:
             count_word_tag += 1
-            count_tag += len(word_shows_tags_dict.keys())
-
-        elif smooth == SMOOTH_PICK_TAG:
-            # for unknown word we will choose TAGS[27] as the tag
-            if tag_num == 58:  # choose 'NN' (58)
-                count_word_tag = 1
-            else:
-                count_word_tag = 0
-        elif smooth == SMOOTH_CONST_PROB:
-            return 1e-20  # 0.00001
-
+            count_tag += len(pseudo_word_shows_tags_dict.keys())
     return count_word_tag/count_tag
 
 
-def hmm_viterbi(sent, smooth):
+def hmm_viterbi(sent, smooth, dict):
     """
     compute the viterbi algorithm
     """
@@ -282,7 +326,7 @@ def hmm_viterbi(sent, smooth):
             # go over tags possibilities for previous word.
             for l in S[k-1]:
                 trans_prob = compute_transition_prob_hmm(l, j)
-                emm_prob = compute_emission_prob_hmm(j, sent[k-1], smooth)
+                emm_prob = compute_emission_prob_hmm(j, sent[k-1], smooth, dict)
 
                 # calc log probability value
                 if (trans_prob > 0) and (emm_prob > 0):
@@ -332,7 +376,7 @@ def hmm_viterbi(sent, smooth):
     return res
 
 
-def compute_error_rate_hmm(test_set, smooth):
+def compute_error_rate_hmm(test_set, smooth, dict):
     """
     compute error rate in test set using hmm.
     """
@@ -342,14 +386,19 @@ def compute_error_rate_hmm(test_set, smooth):
     known_word_correct = 0
     unknown_word_correct = 0
 
+    if dict == NO_PSEUDO_WORDS_DICTIONARY:
+        curr_word_show_dict = word_shows_tags_dict
+    else:
+        curr_word_show_dict = pseudo_word_shows_tags_dict
+
     for tagged_sent in test_set:
         sent = [tagged_sent[i][0] for i in range(len(tagged_sent))]
-        hmm_tagged_sent = hmm_viterbi(sent, smooth)
+        hmm_tagged_sent = hmm_viterbi(sent, smooth, dict)
         for i in range(len(tagged_sent)):
             word = tagged_sent[i][0]
             word_real_tag = tagged_sent[i][1]
             word_hmm_tag = hmm_tagged_sent[i][1]
-            if word in word_shows_tags_dict.keys():
+            if word in curr_word_show_dict.keys():
                 known_word_num += 1
                 if word_hmm_tag == suffix_tag(word_real_tag):
                     known_word_correct += 1
@@ -420,33 +469,47 @@ if __name__ == '__main__':
 
     load_tags(training_set)
     load_dicts(training_set)
+    load_pseudo_word_show_dict()
 
-    print_statistics(test_set)
 
-    errorRateMLT = compute_error_rate_mlt(test_set)
-    print("MLT ERROR RATE:")
-    print("ERROR RATE KNOWN = " + str(errorRateMLT[0]))
-    print("ERROR RATE UNKNOWN = " + str(errorRateMLT[1]))
-    print("TOTAL ERROR RATE = " + str(errorRateMLT[2]))
-    print()
+    # print_statistics(test_set)
+    #
+    # errorRateMLT = compute_error_rate_mlt(test_set)
+    # print("MLT ERROR RATE:")
+    # print("ERROR RATE KNOWN = " + str(errorRateMLT[0]))
+    # print("ERROR RATE UNKNOWN = " + str(errorRateMLT[1]))
+    # print("TOTAL ERROR RATE = " + str(errorRateMLT[2]))
+    # print()
+    #
+    # errorRateHMM = compute_error_rate_hmm(test_set, SMOOTH_PICK_TAG, NO_PSEUDO_WORDS_DICTIONARY)
+    # print("HMM ERROR RATE (picking 'NN' tag for unknown words):")
+    # print("ERROR RATE KNOWN = " + str(errorRateHMM[0]))
+    # print("ERROR RATE UNKNOWN = " + str(errorRateHMM[1]))
+    # print("TOTAL ERROR RATE = " + str(errorRateHMM[2]))
+    # print()
+    #
+    # errorRateHMM = compute_error_rate_hmm(test_set, SMOOTH_CONST_PROB, NO_PSEUDO_WORDS_DICTIONARY)
+    # print("HMM ERROR RATE (return const small probability for unknown words):")
+    # print("ERROR RATE KNOWN = " + str(errorRateHMM[0]))
+    # print("ERROR RATE UNKNOWN = " + str(errorRateHMM[1]))
+    # print("TOTAL ERROR RATE = " + str(errorRateHMM[2]))
+    # print()
+    #
+    # errorRateHMM = compute_error_rate_hmm(test_set, SMOOTH_ADD_ONE, NO_PSEUDO_WORDS_DICTIONARY)
+    # print("HMM add one ERROR RATE:")
+    # print("ERROR RATE KNOWN = " + str(errorRateHMM[0]))
+    # print("ERROR RATE UNKNOWN = " + str(errorRateHMM[1]))
+    # print("TOTAL ERROR RATE = " + str(errorRateHMM[2]))
 
-    errorRateHMM = compute_error_rate_hmm(test_set, SMOOTH_PICK_TAG)
-    print("HMM ERROR RATE (picking 'NN' tag for unknown words):")
+    errorRateHMM = compute_error_rate_hmm(test_set, SMOOTH_PICK_TAG, PSEUDO_WORDS_DICTIONARY)
+    print("HMM ERROR RATE pseudo words:")
     print("ERROR RATE KNOWN = " + str(errorRateHMM[0]))
     print("ERROR RATE UNKNOWN = " + str(errorRateHMM[1]))
     print("TOTAL ERROR RATE = " + str(errorRateHMM[2]))
     print()
 
-    errorRateHMM = compute_error_rate_hmm(test_set, SMOOTH_CONST_PROB)
-    print("HMM ERROR RATE (return const small probability for unknown words):")
-    print("ERROR RATE KNOWN = " + str(errorRateHMM[0]))
-    print("ERROR RATE UNKNOWN = " + str(errorRateHMM[1]))
-    print("TOTAL ERROR RATE = " + str(errorRateHMM[2]))
-    print()
-
-    errorRateHMM = compute_error_rate_hmm(test_set, SMOOTH_ADD_ONE)
-    print("HMM add one ERROR RATE:")
-    print("ERROR RATE KNOWN = " + str(errorRateHMM[0]))
-    print("ERROR RATE UNKNOWN = " + str(errorRateHMM[1]))
-    print("TOTAL ERROR RATE = " + str(errorRateHMM[2]))
-    print()
+    errorRateHMM = compute_error_rate_hmm(test_set, SMOOTH_ADD_ONE, PSEUDO_WORDS_DICTIONARY)
+    print("HMM add one ERROR RATE and pseudo:")
+    print("ERROR RATE KNOWN = " + str(errorRateHMM[ 0 ]))
+    print("ERROR RATE UNKNOWN = " + str(errorRateHMM[ 1 ]))
+    print("TOTAL ERROR RATE = " + str(errorRateHMM[ 2 ]))
